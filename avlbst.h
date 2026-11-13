@@ -137,7 +137,10 @@ protected:
     virtual void nodeSwap( AVLNode<Key,Value>* n1, AVLNode<Key,Value>* n2);
 
     // Add helper functions here
-
+    AVLNode<Key, Value>* rotateLeft(AVLNode<Key, Value>* n);
+    AVLNode<Key, Value>* rotateRight(AVLNode<Key, Value>* n);
+    // Fixes a node whose balance is -2 or +2 and returns the new subtree root.
+    AVLNode<Key, Value>* rebalance(AVLNode<Key, Value>* n);
 
 };
 
@@ -148,7 +151,65 @@ protected:
 template<class Key, class Value>
 void AVLTree<Key, Value>::insert (const std::pair<const Key, Value> &new_item)
 {
-    // TODO
+  const Key& k = new_item.first;
+ 
+  if (this->root_ == NULL) {
+    this->root_ = new AVLNode<Key, Value>(k, new_item.second, NULL);
+    return;
+  }
+ 
+  // Ordinary BST descent to find the leaf position for k.
+  AVLNode<Key, Value>* curr = static_cast<AVLNode<Key, Value>*>(this->root_);
+  AVLNode<Key, Value>* z = NULL;
+  while (z == NULL) {
+    if (k < curr->getKey()) {
+      if (curr->getLeft() == NULL) {
+        z = new AVLNode<Key, Value>(k, new_item.second, curr);
+        curr->setLeft(z);
+      }
+      else {
+        curr = curr->getLeft();
+        }
+      }
+    else if (curr->getKey() < k) {
+      if (curr->getRight() == NULL) {
+        z = new AVLNode<Key, Value>(k, new_item.second, curr);
+        curr->setRight(z);
+      }
+      else {
+        curr = curr->getRight();
+      }
+    }
+    else {
+      // Key already present: overwrite the value, shape unchanged.
+      curr->setValue(new_item.second);
+      return;
+    }
+  }
+
+    // Walk up from the new leaf. Each ancestor's subtree grew by one level,
+    // so update its balance and stop as soon as the height stops changing.
+    AVLNode<Key, Value>* child = z;
+    AVLNode<Key, Value>* par = curr;
+    while (par != NULL) {
+        if (child == par->getLeft()) {
+            par->updateBalance(-1);   // grew on the left: right - left decreases
+        }
+        else {
+            par->updateBalance(1);    // grew on the right: right - left increases
+        }
+ 
+        int8_t b = par->getBalance();
+        if (b == 0) {
+            break;                    // subtree absorbed the new leaf; height unchanged
+        }
+        if (b == 2 || b == -2) {
+            rebalance(par);           // a rotation restores the pre-insert height
+            break;
+        }
+        child = par;                  // b == +1 or -1: height grew, keep going up
+        par = par->getParent();
+    }  
 }
 
 /*
@@ -158,7 +219,59 @@ void AVLTree<Key, Value>::insert (const std::pair<const Key, Value> &new_item)
 template<class Key, class Value>
 void AVLTree<Key, Value>:: remove(const Key& key)
 {
-    // TODO
+  AVLNode<Key, Value>* curr = static_cast<AVLNode<Key, Value>*>(this->internalFind(key));
+    if (curr == NULL) {
+        return;
+    }
+ 
+    // Two children: swap with the predecessor so curr has at most one child.
+    // nodeSwap also swaps the balances, so they stay with their nodes.
+    if (curr->getLeft() != NULL && curr->getRight() != NULL) {
+        AVLNode<Key, Value>* pred = static_cast<AVLNode<Key, Value>*>(this->predecessor(curr));
+        this->nodeSwap(curr, pred);
+    }
+ 
+    // Splice out curr, promoting its single child (if any).
+    AVLNode<Key, Value>* child = (curr->getLeft() != NULL) ? curr->getLeft() : curr->getRight();
+    AVLNode<Key, Value>* par = curr->getParent();
+    bool wasLeft = (par != NULL && par->getLeft() == curr);
+ 
+    if (par == NULL) {
+        this->root_ = child;
+    }
+    else if (wasLeft) {
+        par->setLeft(child);
+    }
+    else {
+        par->setRight(child);
+    }
+    if (child != NULL) {
+        child->setParent(par);
+    }
+    delete curr;
+ 
+    // Walk up from the removed spot. The side that lost a level increases its
+    // balance in the sense of right - left. Stop once a subtree's height is unchanged.
+    AVLNode<Key, Value>* n = par;
+    bool leftShrunk = wasLeft;
+    while (n != NULL) {
+        AVLNode<Key, Value>* p = n->getParent();
+        bool nIsLeft = (p != NULL && p->getLeft() == n);
+ 
+        n->updateBalance(leftShrunk ? 1 : -1);
+        int8_t b = n->getBalance();
+ 
+        if (b == 2 || b == -2) {
+            n = rebalance(n);         // new subtree root, p still its parent
+            b = n->getBalance();
+        }
+        if (b != 0) {
+            break;                    // height unchanged (balance is +1 or -1)
+        }
+        // height dropped by one: the parent may need work too
+        n = p;
+        leftShrunk = nIsLeft;
+    }
 }
 
 template<class Key, class Value>
@@ -170,5 +283,106 @@ void AVLTree<Key, Value>::nodeSwap( AVLNode<Key,Value>* n1, AVLNode<Key,Value>* 
     n2->setBalance(tempB);
 }
 
+
+/*
+ * Single left rotation about n (n's right child r is promoted).
+ * With balance = right - left:
+ *   new b(n) = b(n) - 1 - max(b(r), 0)
+ *   new b(r) = b(r) - 1 + min(new b(n), 0)
+ */
+template<class Key, class Value>
+AVLNode<Key, Value>* AVLTree<Key, Value>::rotateLeft(AVLNode<Key, Value>* n)
+{
+    AVLNode<Key, Value>* r = n->getRight();
+    AVLNode<Key, Value>* inner = r->getLeft();
+    AVLNode<Key, Value>* p = n->getParent();
+ 
+    int bn = n->getBalance();
+    int br = r->getBalance();
+    int bnNew = bn - 1 - (br > 0 ? br : 0);
+    int brNew = br - 1 + (bnNew < 0 ? bnNew : 0);
+    n->setBalance(static_cast<int8_t>(bnNew));
+    r->setBalance(static_cast<int8_t>(brNew));
+ 
+    n->setRight(inner);
+    if (inner != NULL) {
+        inner->setParent(n);
+    }
+    r->setLeft(n);
+    n->setParent(r);
+ 
+    r->setParent(p);
+    if (p == NULL) {
+        this->root_ = r;
+    }
+    else if (p->getLeft() == n) {
+        p->setLeft(r);
+    }
+    else {
+        p->setRight(r);
+    }
+    return r;
+}
+ 
+/*
+ * Single right rotation about n (n's left child l is promoted).
+ * With balance = right - left:
+ *   new b(n) = b(n) + 1 - min(b(l), 0)
+ *   new b(l) = b(l) + 1 + max(new b(n), 0)
+ */
+template<class Key, class Value>
+AVLNode<Key, Value>* AVLTree<Key, Value>::rotateRight(AVLNode<Key, Value>* n)
+{
+    AVLNode<Key, Value>* l = n->getLeft();
+    AVLNode<Key, Value>* inner = l->getRight();
+    AVLNode<Key, Value>* p = n->getParent();
+ 
+    int bn = n->getBalance();
+    int bl = l->getBalance();
+    int bnNew = bn + 1 - (bl < 0 ? bl : 0);
+    int blNew = bl + 1 + (bnNew > 0 ? bnNew : 0);
+    n->setBalance(static_cast<int8_t>(bnNew));
+    l->setBalance(static_cast<int8_t>(blNew));
+ 
+    n->setLeft(inner);
+    if (inner != NULL) {
+        inner->setParent(n);
+    }
+    l->setRight(n);
+    n->setParent(l);
+ 
+    l->setParent(p);
+    if (p == NULL) {
+        this->root_ = l;
+    }
+    else if (p->getLeft() == n) {
+        p->setLeft(l);
+    }
+    else {
+        p->setRight(l);
+    }
+    return l;
+}
+ 
+template<class Key, class Value>
+AVLNode<Key, Value>* AVLTree<Key, Value>::rebalance(AVLNode<Key, Value>* n)
+{
+    if (n->getBalance() < 0) {
+        // Left-heavy. If the left child leans right, rotate it first (left-right case).
+        AVLNode<Key, Value>* l = n->getLeft();
+        if (l->getBalance() > 0) {
+            rotateLeft(l);
+        }
+        return rotateRight(n);
+    }
+    else {
+        // Right-heavy. Mirror image of the case above.
+        AVLNode<Key, Value>* r = n->getRight();
+        if (r->getBalance() < 0) {
+            rotateRight(r);
+        }
+        return rotateLeft(n);
+    }
+}
 
 #endif
